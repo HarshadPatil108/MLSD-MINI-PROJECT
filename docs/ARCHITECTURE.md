@@ -1,219 +1,180 @@
 # Architecture: Production Incident Triage and Runbook Assistant
 
-Status: draft v1. Decisions and their reasons live in `docs/DECISIONS.md`. Progress lives in `docs/PROGRESS.md`.
+Status: Approved v2 (Supercedes draft v1 per `docs/ASSIGNMENT.pdf`). Decisions live in `docs/DECISIONS.md`. Progress lives in `docs/PROGRESS.md`.
 
-## 1. Purpose and scope
+## 1. Purpose and Scope
 
-An SRE assistant that takes an alert, retrieves relevant runbooks and post-mortems, gathers telemetry through tools, proposes a diagnosis and remediation, and gates any mutating action behind human approval.
+An advisory multi-agent SRE assistant that accepts an alert payload and on-call note for PostgreSQL incidents, validates and quarantines malformed inputs, retrieves relevant guidance from official PostgreSQL documentation and operational runbooks using tools, determines a cause class and severity, verifies all citations against retrieved text, and routes the incident.
 
-All infrastructure is **simulated**. Corpus, incidents and labels are **synthetic**. Metrics describe performance on this synthetic data, not on real production systems.
+**Core Invariant:** The system **never executes a remediation**. It proposes a cause class and first-response steps with supporting evidence and citations. The on-call engineer decides.
 
 ### Non-goals
-- No execution of real commands against real systems.
-- No multi-tenant auth, no real paging/ticketing integrations.
-- No fine-tuning. No multi-agent swarm.
+- No execution of commands against live or simulated production systems.
+- No multi-tenant auth or real PagerDuty/Slack webhooks.
+- No model fine-tuning; no unconstrained agent swarms.
 
-## 2. Topology
+---
 
-| Service | Tech | Where | Notes |
-|---|---|---|---|
-| `backend` | FastAPI | Docker | triage, RAG search, agent runs, approvals, eval endpoints, SSE trace stream |
-| `qdrant` | Qdrant >= 1.10 | Docker | dense + sparse vectors, server-side RRF |
-| `frontend` | Streamlit | Docker | thin client; holds no run state |
-| `ollama` | Ollama | **Host** | `qwen2.5:7b-instruct` Q4; reached via `host.docker.internal:11434` |
+## 2. Service Topology (Docker Compose)
 
-Hardware assumption: 8GB VRAM GPU. LLM on GPU. Embedder and reranker on CPU.
-Ollama settings: `num_ctx=8192`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_FLASH_ATTENTION=1`.
+Under requirement D3, the system runs with at least four interdependent services orchestrated via Docker Compose (`docker compose up` from a clean clone):
 
-```
-Streamlit  --HTTP/SSE-->  FastAPI  --> LangGraph agent --> Gateway (LiteLLM) --> Ollama (host)
-                             |              |
-                             |              +--> Telemetry simulator (in-process)
-                             +--> Qdrant (hybrid search)
-                             +--> SQLite (run state, checkpoints, audit log)
-```
-
-## 3. Repository layout
+| Service | Technology | Role & Boundary Justification |
+|---|---|---|
+| `api` | FastAPI | REST gateway, request validation, quarantine storage, async run submission (`POST /runs`), run status (`GET /runs/{id}`), metrics. |
+| `worker` | Python Worker | Background consumer pulling runs from Redis queue. Executes the multi-agent graph (Triage $\rightarrow$ Investigator $\rightarrow$ Verifier). Decoupled for independent scaling (`--scale worker=3`). |
+| `redis` | Redis 7 | High-performance task queue broker and run state/status cache. Isolates API latency from agent execution time. |
+| `chroma` | Chroma DB | Dedicated vector database supporting ID-based upsert (re-embedding without index rebuild) and metadata filtering. Runs CPU embeddings (`all-MiniLM-L6-v2`). |
+| `frontend` | Streamlit | Thin web client (A8). Submits requests, polls run status, and displays recommendations with verified citations and escalation paths. Holds no run state. |
 
 ```
-src/
-  gateway/        LiteLLM wrapper, schema-constrained calls, retry/repair, response cache
-  rag/            ingestion, chunking, embedding, Qdrant client, hybrid query, reranker
-  safety/         command parser, tiered classifier, SQL validator, injection fixtures
-  telemetry_sim/  scenario loader, simulated tools (logs, metrics, deploys, k8s, disk)
-  agent/          LangGraph graph, node functions, Pydantic state and schemas, prompts
-  api/            FastAPI routes, SSE streaming, approval endpoints
-  eval/           retrieval eval, agent eval, safety eval, optional RAGAS, report generator
-frontend/         Streamlit app
-data/
-  corpus/         runbooks/, postmortems/ (markdown, synthetic)
-  scenarios/      one folder per incident: alert.json, telemetry/, ground_truth.json
-  eval/           retrieval_pairs.jsonl, alerts_labeled.jsonl, adversarial_commands.jsonl
-tests/
-docs/
+[Browser / Streamlit] --HTTP--> [api (FastAPI)]
+                                  |
+                                  ├──> [Quarantine Store (Rejects)]
+                                  │
+                                  └──> [redis (Queue & State)]
+                                         ▲
+                                         │ Dequeues run_id
+                                         ▼
+                                       [worker (Multi-Agent)]
+                                         ├──> LiteLLM (Cloud Free-Tier via Env)
+                                         └──> [chroma (Vector DB)]
 ```
 
-## 4. Agent flow
+---
 
-A linear LangGraph with one interrupt. No branching beyond the capped tool loop.
+## 3. Data Contract & Ingestion Boundary (D1, F1, F2)
 
-```
-classify_severity
-      -> retrieve_runbooks
-      -> gather_telemetry   (loop, max 4 iterations)
-      -> hypothesize
-      -> propose_actions
-      -> [INTERRUPT: human approval for MUTATING actions]
-      -> execute_simulated
-      -> verify
-      -> summarize
-```
+Every external interface enforces a strict, published data contract. Validation runs at the ingestion boundary **before any agent starts**.
 
-Rules:
-- Every node returns a Pydantic model. Output is schema-constrained at the gateway.
-- Every action passes the safety classifier **before** execution and **before** being shown for approval.
-- READ_ONLY actions auto-run. MUTATING actions pause at the interrupt. FORBIDDEN actions are rejected and logged, never shown as approvable.
-- State is persisted by the LangGraph checkpointer (SQLite). An approval can arrive after a UI reload.
-- Per-run budgets: max LLM calls, max total tokens, max wall-clock seconds. Exceeding any budget ends the run with a partial summary.
-- Older tool outputs are summarized before being appended to the scratchpad to stay within the 8k context.
-
-### Context budget (approximate, tokens)
-System + schema 800, alert + telemetry 1500, retrieved chunks 1500, scratchpad 2000, output headroom 1000.
-
-## 5. Key schemas
-
+### Alert Ingestion Contract (`POST /runs`)
 ```python
-class Alert:        id, service, source, message, fired_at, labels: dict
-class Severity:     level: Literal["SEV1","SEV2","SEV3","SEV4"], rationale: str
-class Hypothesis:   root_cause: str, confidence: float, evidence: list[EvidenceRef]
-class Action:       id, command: str, kind: Literal["shell","sql","api"], rationale: str,
-                    tier: Literal["READ_ONLY","MUTATING","FORBIDDEN"] | None
-class ToolStep:     thought: str, action: Action        # "JSON action" format, not native function-calling
-class ApprovalRecord: action_id, decision, decided_by, decided_at, reason
-class AgentState:   alert, severity, retrieved_chunks, telemetry_summary, hypotheses,
-                    proposed_actions, approvals, executed, report, budget_used
+class AlertPayload(BaseModel):
+    alert_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{8,64}$")
+    timestamp: datetime
+    service: str = Field(..., min_length=2, max_length=64)
+    pg_version: str = Field(..., pattern=r"^1[4-8](\.[0-9]+)?$")
+    metric_name: str = Field(..., min_length=2, max_length=64)
+    metric_value: float = Field(..., ge=0.0)
+    threshold: float = Field(..., ge=0.0)
+    severity_hint: Literal["CRITICAL", "WARNING", "INFO"]
+    on_call_note: str = Field(..., min_length=5, max_length=2000)
+    tags: dict[str, str] = Field(default_factory=dict)
 ```
 
-## 6. Safety layer
+### Validation & Quarantine Policy
+- **Boundary Checks:** Type enforcement, numeric ranges (`metric_value >= 0`), categorical checks, timestamp non-future check, and cross-field consistency.
+- **Quarantine:** Any rejected request is immediately recorded in quarantine storage with field-level error details. A malformed request **never starts an agent run**.
 
-Tiered classifier. Allowlist first, not blocklist.
+---
 
-| Tier | Behavior | Examples |
+## 4. Corpus & Grounding (Section 3)
+
+The knowledge base is composed strictly of:
+1. **PostgreSQL Documentation for One Major Version:** Specifically chapters on monitoring, write-ahead logging (WAL), and replication (sourced from `data/corpus/pg_docs/postgresql-18-A4.pdf`).
+2. **Three Custom Runbooks:** Written in consistent markdown format covering common failure modes:
+   - Runbook 1: PostgreSQL Unused/Abandoned Replication Slot WAL Accumulation.
+   - Runbook 2: Connection Pool Saturation and Backend Starvation.
+   - Runbook 3: Lock Contention and Long-Running Transaction Serialization Deadlocks.
+3. **Severity & Escalation Policy:** Defining unambiguous rules for severity classification (`SEV1`–`SEV4`) and routing targets (`self-serve runbook`, `page-secondary`, `incident-commander`).
+
+### Chunking & Storage (L1, D2)
+- Header-aware hierarchical chunking (250–350 tokens) preserving breadcrumbs and section IDs (`pg18/replication/slots#1`).
+- Embeddings: CPU `sentence-transformers/all-MiniLM-L6-v2`.
+- Indexed in Chroma with document and section IDs, enabling idempotent upsert without full rebuilds.
+
+---
+
+## 5. Multi-Agent Reasoning Architecture (A1, A2, A3, Section 5)
+
+Reasoning is orchestrated as a multi-agent system in LangGraph with distinct responsibilities, explicit hand-offs, and tool bounds.
+
+```mermaid
+flowchart TD
+    Q[Redis Task Queue] --> W[Worker Dequeues Run]
+    W --> G1[Guardrail: Input Prompt-Injection & Toxicity Check]
+    G1 -->|Clean| A1[Agent 1: Triage Agent]
+    G1 -->|Flagged| QUAR[Quarantine / Security Abort]
+
+    subgraph Triage ["Agent 1: Triage"]
+        A1 -->|Analyze Alert & Extract Entities| Handoff[TriageHandOff Contract]
+    end
+
+    Handoff --> A2[Agent 2: Investigator Agent]
+
+    subgraph Investigation ["Agent 2: Investigator (Tool Loop)"]
+        A2 <--> T1["tool: corpus_search(query, filters)"]
+        A2 <--> T2["tool: get_section(section_id)"]
+        A2 <--> T3["tool: get_alert_field(field_name)"]
+        A2 -->|Capped: max 5 steps, max 6 tool calls, 45s wall-clock| Hypo[Proposed Diagnosis & Steps]
+    end
+
+    Hypo --> A3[Mandatory Verifier Step]
+
+    subgraph Verification ["Verification & Grounding"]
+        A3 --> VCheck{Every citation resolves to text & clear single cause?}
+        VCheck -->|Verified| G2[Guardrail: Output Authorization Filter]
+        VCheck -->|Unverified / Multi-Cause Ambiguity| Escalate[Escalate to Human (F7)]
+        VCheck -->|Retry Warranted| A2
+    end
+
+    G2 --> Res[Store Final Result in Redis & Return]
+```
+
+### Agent 1: Triage Agent
+- **Responsibility:** Ingests the validated alert and on-call note. Classifies the symptom into candidate cause classes: `saturation`, `contention`, `configuration`, `dependency failure`, or `data-volume`. Extracts key operational entities (e.g. `pg_version`, `metric_name`, error patterns).
+- **Hand-off Contract (`TriageHandOff`):** Passes candidate causes, extracted entities, and initial search queries to the Investigator.
+
+### Agent 2: Investigator Agent (Tool-Calling Agent)
+- Retrieval is **a tool the agent chooses to call**, not a fixed pipeline stage.
+- **Tools Provided:**
+  1. `corpus_search(query: str, doc_type: str = None)`: Semantic search over Chroma.
+  2. `get_section(section_id: str)`: Exact retrieval of a full documentation clause or runbook section by ID.
+  3. `get_alert_field(field_name: str)`: Inspects raw alert metadata and on-call notes.
+- **Multi-Hop Investigation Loop (Section 5):**
+  1. Retrieves the provision that appears to apply.
+  2. Determines whether modifying provisions exist (e.g., alert notes "disk climbing", storage docs retrieved, but agent identifies WAL retention by replication slots).
+  3. Searches again with a query derived from what it has learned.
+- **Bounds:** Capped at max 5 steps, max 6 tool calls, and a 45-second wall-clock timeout.
+
+### Mandatory Verifier Step (A3)
+- Validates every factual statement in the proposed guidance against the retrieved text.
+- **Verification Rule:** Every citation must resolve to actual retrieved text in the run's context.
+- **Escalation Trigger (F7):** If citations do not resolve, or if the symptom has equal support across multiple cause classes, or falls outside the corpus, the system **escalates to human** (`route: page-secondary` or `incident-commander`) rather than returning an ungrounded answer.
+
+---
+
+## 6. Guardrails & Security Layer (L4)
+
+Implemented in `src/guardrails/`:
+1. **Prompt-Injection Defense:** Sanitizes and detects jailbreaks / override attempts on all free-text fields (`on_call_note`) before reaching the model. Tool output is treated strictly as data.
+2. **Toxicity Detection:** Scans both inputs and model outputs for toxic or adversarial phrasing.
+3. **Output Authorization Filter:** Verifies that the agent never produces unauthorized determinations or command execution scripts. Enforces categorical outputs (`cause_class`, `severity`, `route`).
+
+---
+
+## 7. LLM Gateway & Reliability (A5, D4, Section 12)
+
+- Routed through `LiteLLM` using free-tier cloud providers (e.g., Groq, Gemini) configured solely through environment variables.
+- **Zero Secrets In Repo:** No API keys, endpoints, or model IDs are hardcoded. Documented via `.env.example`.
+- **Reliability:** Timeouts on every LLM call, bounded retries with exponential backoff, and a circuit breaker pattern. If the provider fails, the system triggers graceful degradation to a safe escalation response.
+
+---
+
+## 8. Asynchronous API Surface (A4, F8)
+
+| Method | Endpoint | Purpose |
 |---|---|---|
-| `READ_ONLY` | auto-run | `kubectl get`, `kubectl logs`, `kubectl describe`, `df`, `free`, `tail`, `cat` of allowed paths |
-| `MUTATING` | human approval required | `kubectl rollout restart`, `systemctl restart`, scale operations |
-| `FORBIDDEN` | always rejected | unparseable input, command substitution, pipes to `sh`/`bash`, `rm` variants, `find -delete`, `dd`, `mkfs`, `chmod -R`, anything not in an allowlist |
+| `POST` | `/runs` | Accepts `AlertPayload`, validates, quarantines rejects, enqueues run, returns `{ "run_id": "...", "status": "QUEUED" }`. |
+| `GET` | `/runs/{id}` | Returns current status (`QUEUED`, `RUNNING`, `COMPLETED`, `ESCALATED`, `FAILED`) and full `RunResult`. |
+| `GET` | `/quarantine` | Lists quarantined alert submissions with field-level rejection reasons. |
+| `GET` | `/health` | Liveness and dependency checks (Redis, Chroma, Gateway). |
+| `GET` | `/metrics` | Prometheus metrics (request rates, latency p50/p95, agent tool calls, cache hits). |
 
-Implementation notes:
-- Shell: parse with `bashlex`. Any parse failure means FORBIDDEN. Validate the binary, subcommand, **and arguments**.
-- SQL: parse with `sqlglot`. Only a single `SELECT` statement is READ_ONLY. Everything else is MUTATING or FORBIDDEN by policy.
-- Unknown binary or subcommand defaults to FORBIDDEN.
-- Tool output is wrapped and labeled as untrusted data in prompts. Instructions found in logs or alerts are never followed.
-- Adversarial suite (`data/eval/adversarial_commands.jsonl`) includes flag-splitting (`rm -r -f`), base64 substitution, `find / -delete`, chained commands, unicode lookalikes, and prompt-injection strings embedded in log lines. **A hand-written core set is maintained by the human, not generated by the agent.**
-- Audit log (SQLite): every proposed, classified, approved, rejected and executed action with timestamp and run id.
+---
 
-## 7. RAG pipeline
+## 9. Evaluation & Observability (L3, D5, D6)
 
-### Ingestion (idempotent, script and endpoint)
-1. Load markdown from `data/corpus/`. Hash each file; skip unchanged.
-2. Split on headers. Keep the header path as metadata, for example `DB Runbook > Connection Pool > Mitigation`.
-3. Target 250-350 tokens per chunk. Prepend the header path to chunk text before embedding.
-4. Store metadata: `doc_id`, `doc_type` (runbook | postmortem), `service`, `header_path`, `parent_id`, `source_hash`.
-5. Embed dense (`all-MiniLM-L6-v2`, CPU) and sparse (BM25-style via `fastembed`). Upsert into one Qdrant collection with named vectors.
-
-### Retrieval
-1. Metadata pre-filter on `service` (from the alert) when available.
-2. Qdrant Query API: dense and sparse prefetch, server-side RRF fusion, top 20.
-3. Cross-encoder rerank (`ms-marco-MiniLM-L-6-v2`, CPU): top 20 to top 4-5.
-4. Optional parent-section expansion for the final chunks.
-
-### Ablation variants (all must be runnable from one script)
-`dense` | `bm25` | `hybrid_rrf` | `hybrid_rrf + rerank`
-
-## 8. LLM gateway
-
-- LiteLLM behind a thin wrapper. `LLM_PROVIDER=ollama|groq|gemini`, default `ollama`.
-- API: `generate(prompt, schema: type[BaseModel], *, temperature=0, max_tokens) -> BaseModel`.
-- Schema passed to Ollama via the `format` parameter (constrained decoding). On validation failure: one repair attempt, then fail the node.
-- Retry with backoff for cloud providers. Response cache keyed by hash of (model, prompt, schema, temperature) used in eval for reproducibility.
-- No provider SDK imports outside `src/gateway/`.
-
-## 9. Simulated telemetry and scenarios
-
-Each scenario folder contains:
-- `alert.json`: the triggering alert
-- `telemetry/`: canned logs, metrics series, deploy history, k8s state, disk and connection stats
-- `ground_truth.json`: root cause, severity, correct runbook doc ids, correct remediation action(s), forbidden traps
-
-Simulated tools read only from the active scenario. Mutating actions in the simulator change scenario state (for example, "restart" moves the metric series to a recovered state) so `verify` has something to check.
-
-Initial scenarios (target 8-10): DB connection pool exhaustion, bad deploy, disk full, memory leak, certificate expiry, noisy neighbor CPU, DNS failure, queue backlog. At least two include prompt-injection text in logs.
-
-## 10. API surface (backend)
-
-| Route | Purpose |
-|---|---|
-| `POST /triage` | classify an alert; return severity and rationale |
-| `POST /rag/search` | hybrid search with optional filters and variant selector |
-| `POST /runs` | start an agent run for an alert or scenario id |
-| `GET /runs/{id}/stream` | SSE stream of node events, tool calls, LLM outputs |
-| `GET /runs/{id}` | current state and report |
-| `POST /runs/{id}/approvals` | approve or reject a pending action |
-| `GET /audit` | audit log, filterable by run |
-| `POST /eval/run` | trigger an eval suite (background); `GET /eval/results` for output |
-| `GET /health` | liveness and dependency checks (Qdrant, Ollama) |
-
-The Streamlit UI holds no run state. It polls or subscribes to SSE and renders from backend state.
-
-## 11. Evaluation plan
-
-Primary metrics (no LLM judge, deterministic):
-
-| Area | Metrics | Data |
-|---|---|---|
-| Retrieval | Recall@k, MRR, nDCG for each ablation variant | `retrieval_pairs.jsonl` (hand-labeled query to chunk) |
-| Severity | accuracy, macro F1 | `alerts_labeled.jsonl` (40-60 synthetic alerts) |
-| Agent | root-cause accuracy, correct-tool-call rate, steps-to-diagnosis, latency | scenarios + `ground_truth.json` |
-| Safety | unsafe-action block rate, false-block rate on benign set | `adversarial_commands.jsonl` |
-
-Secondary: RAGAS faithfulness and context recall, with a pinned judge model, temperature 0, cached results, small fixed set, variance reported across runs. The judge is named in the README.
-
-Report generator writes `docs/RESULTS.md` from script output. The README may only reference numbers from that file.
-
-Report the agent model separately from the judge model. An optional extra row compares the local 7B against a cloud model.
-
-## 12. Observability
-
-- Structured logging with a run id on every line.
-- Langfuse or OpenTelemetry traces for LLM calls and graph nodes (choose one; log in DECISIONS.md).
-- Latency and token counts recorded per node.
-
-## 13. CI
-
-GitHub Actions: ruff, pytest (unit and safety adversarial suite), and a small offline eval on fixture data using cached LLM responses. No GPU required in CI.
-
-## 14. Build order (maps to PROGRESS.md slices)
-
-1. Skeleton, Compose, `/health`, tooling
-2. Corpus, chunking, ingestion
-3. Qdrant hybrid, reranker, retrieval eval and ablation table
-4. Gateway with schema-constrained output and cache; local-model smoke test on 20 alerts
-5. Command classifier and adversarial suite
-6. Telemetry simulator and scenarios
-7. LangGraph agent with interrupt and checkpointer
-8. Agent and safety eval
-9. API streaming, audit log, Streamlit cockpit
-10. CI, observability, README with results and Limitations
-
-## 15. Known limitations (to repeat in README)
-
-- Synthetic corpus and incidents; results do not generalize to real systems.
-- A 7B local model has limited reasoning and may fail on long or ambiguous telemetry.
-- Free-tier or local judge models are noisy for RAGAS metrics.
-- The classifier is an allowlist for a small command set, not a complete shell security boundary.
-
-## 16. Open questions
-
-- Langfuse vs OpenTelemetry for tracing.
-- Whether to add a React frontend after the Streamlit version works.
-- Whether `qwen3:8b` (non-thinking) beats `qwen2.5:7b` on the smoke test enough to switch.
+- **Scenario Evaluation (L3):** Fixed benchmark of at least 20 scenarios (including Section 4.1 replication slot disk saturation case) reporting groundedness, context relevance, faithfulness, and hallucination rate using an LLM judge with pinned temperature 0.
+- **SLO & Load Testing (D6):** Declared p95 SLO. Load tested with Locust using an LLM stub service returning realistic fixed responses to benchmark queuing and retrieval latency independent of provider rate limits.
+- **Observability (D5):** Structured JSON logs with unique `correlation_id` across API and worker. OpenTelemetry traces exported to Jaeger.

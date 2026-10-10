@@ -1,0 +1,520 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "IncidentOps Ingestion & Management API",
+    "description": "Advisory Multi-Agent SRE Assistant Ingestion Boundary. Enforces strict Pydantic v2 data contracts, schema and cross-field validation, and quarantine isolation for malformed requests.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/runs": {
+      "post": {
+        "summary": "Submit an alert for multi-agent triage",
+        "description": "Validates incoming alert contract. If valid, enqueues to task queue and returns run_id. If invalid, quarantines and returns 422.",
+        "operationId": "submit_run_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/quarantine": {
+      "get": {
+        "summary": "List quarantined requests",
+        "description": "Retrieve paginated list of rejected malformed alert payloads.",
+        "operationId": "list_quarantine_quarantine_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Max records to return",
+              "default": 100,
+              "title": "Limit"
+            },
+            "description": "Max records to return"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Record offset",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Record offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuarantineListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/quarantine/{quarantine_id}": {
+      "get": {
+        "summary": "Get quarantined record by ID",
+        "description": "Retrieve specific quarantined payload details and validation error diagnostics.",
+        "operationId": "get_quarantined_record_quarantine__quarantine_id__get",
+        "parameters": [
+          {
+            "name": "quarantine_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quarantine Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuarantineRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Service health check",
+        "description": "Check API service health and report corpus index status.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Check Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Expose Prometheus telemetry including corpus index size, duration, and throughput.",
+        "operationId": "prometheus_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AlertRequest": {
+        "properties": {
+          "alert_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 3,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Id",
+            "description": "Optional unique identifier for the alert. Generated if omitted."
+          },
+          "alert_name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 2,
+            "title": "Alert Name",
+            "description": "Canonical alert name / title (e.g. PostgresReplicationLagHigh)."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[a-zA-Z0-9_\\.-]+$",
+            "title": "Source",
+            "description": "Monitoring source originating the alert (e.g. prometheus, datadog, manual)."
+          },
+          "fired_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fired At",
+            "description": "ISO 8601 timestamp when the alert triggered. Must not be in the future."
+          },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Metrics",
+            "description": "Key-value mapping of metric names to numeric values with range bounds."
+          },
+          "pg_version": {
+            "type": "string",
+            "title": "Pg Version",
+            "description": "PostgreSQL major or dot version. Must match the indexed corpus version (e.g. 18)."
+          },
+          "severity_hint": {
+            "$ref": "#/components/schemas/SeverityHint",
+            "description": "Categorical severity hint (CRITICAL, WARNING, INFO)."
+          },
+          "on_call_note": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 5,
+            "title": "On Call Note",
+            "description": "Contextual engineer note describing symptoms or triage context (5-2000 chars)."
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Tags",
+            "description": "Optional operational tags (environment, host, region, cluster)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alert_name",
+          "source",
+          "fired_at",
+          "metrics",
+          "pg_version",
+          "severity_hint",
+          "on_call_note"
+        ],
+        "title": "AlertRequest",
+        "description": "Strict data contract for incoming incident alerts (F1, D1).\n\nEnforces schema, type, range, category, and cross-field validation rules\nbefore any multi-agent reasoning or enqueueing can occur.",
+        "example": {
+          "alert_id": "alert-wal-001",
+          "alert_name": "PostgresReplicationLagHigh",
+          "fired_at": "2026-10-10T22:30:00Z",
+          "metrics": {
+            "active_connections": 42.0,
+            "disk_utilization": 84.5,
+            "replication_lag_bytes": 104857600.0
+          },
+          "on_call_note": "Replication slot standby_1 appears inactive and disk is filling up with WAL.",
+          "pg_version": "18.0",
+          "severity_hint": "CRITICAL",
+          "source": "prometheus",
+          "tags": {
+            "cluster": "prod-db-primary",
+            "region": "us-east-1"
+          }
+        }
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "QuarantineErrorDetail": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field",
+            "description": "Field path or identifier where validation failed."
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable validation failure reason."
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Pydantic or schema error type code."
+          },
+          "input_value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Value",
+            "description": "Provided input value if available."
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "message",
+          "type"
+        ],
+        "title": "QuarantineErrorDetail",
+        "description": "Field-level error detail for quarantined requests."
+      },
+      "QuarantineListResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Total quarantined records."
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QuarantineRecord"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of quarantine entries."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "items"
+        ],
+        "title": "QuarantineListResponse",
+        "description": "Response model for querying the quarantine store."
+      },
+      "QuarantineRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Unique quarantine record identifier."
+          },
+          "quarantined_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Quarantined At",
+            "description": "UTC timestamp of quarantine event."
+          },
+          "client_info": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Info",
+            "description": "Client IP or agent info."
+          },
+          "raw_payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Raw Payload",
+            "description": "The rejected raw request payload."
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/QuarantineErrorDetail"
+            },
+            "type": "array",
+            "title": "Errors",
+            "description": "Field-level validation errors."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Summary explanation for rejection."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "quarantined_at",
+          "raw_payload",
+          "errors",
+          "reason"
+        ],
+        "title": "QuarantineRecord",
+        "description": "Stored record of a quarantined malformed request."
+      },
+      "RunResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "Unique execution run identifier."
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Initial lifecycle status of the run.",
+            "default": "queued"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Timestamp when the run was enqueued."
+          },
+          "alert_name": {
+            "type": "string",
+            "title": "Alert Name",
+            "description": "Validated alert name."
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Confirmation message.",
+            "default": "Alert validated successfully and enqueued for multi-agent triage."
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "created_at",
+          "alert_name"
+        ],
+        "title": "RunResponse",
+        "description": "HTTP 202 response returned when an alert is valid and enqueued."
+      },
+      "SeverityHint": {
+        "type": "string",
+        "enum": [
+          "CRITICAL",
+          "WARNING",
+          "INFO"
+        ],
+        "title": "SeverityHint",
+        "description": "Categorical severity hint for the incoming alert."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

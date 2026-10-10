@@ -1,0 +1,107 @@
+{
+  "last_indexed_at": "2026-10-10T17:52:07.293120Z",
+  "pg_version": "18",
+  "total_chunks": 53,
+  "build_duration_seconds": 22.22,
+  "throughput_chunks_per_sec": 2.39,
+  "files": {
+    "data/corpus/pg_docs/postgresql-18-A4.pdf": {
+      "source_file": "data/corpus/pg_docs/postgresql-18-A4.pdf",
+      "doc_type": "pg_docs",
+      "source_hash": "9c6af8d2c8f0eda1b05e510bd8028f752162d2f5ce2db405bbf197336ce638d2",
+      "chunk_count": 16,
+      "chunk_ids": [
+        "postgresql_18_a4_pdf_13_3_explicit_locking_page_558_0",
+        "postgresql_18_a4_pdf_13_3_explicit_locking_page_558_1",
+        "postgresql_18_a4_pdf_13_3_explicit_locking_page_558_2",
+        "postgresql_18_a4_pdf_26_2_6_replication_slots_page_863_0",
+        "postgresql_18_a4_pdf_the_standby_connects_to_the_primary_that_is_runn_0",
+        "postgresql_18_a4_pdf_and_port_5432_as_the_user_foo_whose_password_is__0",
+        "postgresql_18_a4_pdf_and_port_5432_as_the_user_foo_whose_password_is__1",
+        "postgresql_18_a4_pdf_26_2_6_1_querying_and_manipulating_replication_s_0",
+        "postgresql_18_a4_pdf_26_2_6_1_querying_and_manipulating_replication_s_1",
+        "postgresql_18_a4_pdf_chapter_27_monitoring_database_activity_page_877_0",
+        "postgresql_18_a4_pdf_chapter_27_monitoring_database_activity_page_877_1",
+        "postgresql_18_a4_pdf_28_3_write_ahead_logging_wal_page_943_0",
+        "postgresql_18_a4_pdf_28_3_write_ahead_logging_wal_page_943_1",
+        "postgresql_18_a4_pdf_28_3_write_ahead_logging_wal_page_943_2",
+        "postgresql_18_a4_pdf_47_2_2_replication_slots_page_1614_0",
+        "postgresql_18_a4_pdf_47_2_2_replication_slots_page_1614_1"
+      ],
+      "indexed_at": "2026-10-10T17:51:59.603195Z"
+    },
+    "data/corpus/policy/escalation_policy.md": {
+      "source_file": "data/corpus/policy/escalation_policy.md",
+      "doc_type": "policy",
+      "source_hash": "45f8c827fae16bd4e24ba61b5e6ea044259ee168226fc456cb0696dbd0d810c8",
+      "chunk_count": 8,
+      "chunk_ids": [
+        "escalation_policy_purpose_and_scope_0",
+        "escalation_policy_sev1_critical_production_outage_0",
+        "escalation_policy_sev2_major_production_degradation_0",
+        "escalation_policy_sev3_moderate_degradation_warning_0",
+        "escalation_policy_sev4_informational_anomaly_0",
+        "escalation_policy_target_1_self_serve_runbook_0",
+        "escalation_policy_target_2_page_secondary_0",
+        "escalation_policy_target_3_incident_commander_0"
+      ],
+      "indexed_at": "2026-10-10T17:51:59.957066Z"
+    },
+    "data/corpus/runbooks/connection_pool_saturation.md": {
+      "source_file": "data/corpus/runbooks/connection_pool_saturation.md",
+      "doc_type": "runbook",
+      "source_hash": "30f229f2a1a423fa70225985f39b3ffa0d970054b0280992ef5d5835b0b7721d",
+      "chunk_count": 10,
+      "chunk_ids": [
+        "connection_pool_saturation_overview_and_symptom_0",
+        "connection_pool_saturation_symptoms_0",
+        "connection_pool_saturation_root_cause_analysis_0",
+        "connection_pool_saturation_1_check_connection_breakdown_by_state_0",
+        "connection_pool_saturation_2_identify_idle_in_transaction_connections_0",
+        "connection_pool_saturation_3_check_connection_limits_0",
+        "connection_pool_saturation_step_1_terminate_stale_idle_in_transaction_sessi_0",
+        "connection_pool_saturation_step_2_configure_session_timeouts_0",
+        "connection_pool_saturation_step_3_implement_or_tune_connection_pooling_0",
+        "connection_pool_saturation_escalation_criteria_0"
+      ],
+      "indexed_at": "2026-10-10T17:52:00.351473Z"
+    },
+    "data/corpus/runbooks/lock_contention_deadlocks.md": {
+      "source_file": "data/corpus/runbooks/lock_contention_deadlocks.md",
+      "doc_type": "runbook",
+      "source_hash": "2a0c95f4ac64cb95fc41fb2625714971f265ec4e80b5818fe520d01898289788",
+      "chunk_count": 9,
+      "chunk_ids": [
+        "lock_contention_deadlocks_overview_and_symptom_0",
+        "lock_contention_deadlocks_symptoms_0",
+        "lock_contention_deadlocks_root_cause_analysis_0",
+        "lock_contention_deadlocks_1_identify_blocked_and_blocking_queries_0",
+        "lock_contention_deadlocks_2_inspect_recent_deadlocks_0",
+        "lock_contention_deadlocks_step_1_cancel_or_terminate_the_blocker_0",
+        "lock_contention_deadlocks_step_2_set_lock_and_statement_timeouts_0",
+        "lock_contention_deadlocks_step_3_application_remediation_0",
+        "lock_contention_deadlocks_escalation_criteria_0"
+      ],
+      "indexed_at": "2026-10-10T17:52:00.971794Z"
+    },
+    "data/corpus/runbooks/wal_replication_slot_accumulation.md": {
+      "source_file": "data/corpus/runbooks/wal_replication_slot_accumulation.md",
+      "doc_type": "runbook",
+      "source_hash": "81c8a1208c80f0da0b0631c0edf068c5592475b092ac52f16a77fb2b04ac192b",
+      "chunk_count": 10,
+      "chunk_ids": [
+        "wal_replication_slot_accumulation_overview_and_symptom_0",
+        "wal_replication_slot_accumulation_symptoms_0",
+        "wal_replication_slot_accumulation_root_cause_analysis_0",
+        "wal_replication_slot_accumulation_1_identify_inactive_replication_slots_and_retain_0",
+        "wal_replication_slot_accumulation_2_verify_if_slot_is_active_or_abandoned_0",
+        "wal_replication_slot_accumulation_step_1_drop_the_inactive_replication_slot_0",
+        "wal_replication_slot_accumulation_step_2_trigger_checkpoint_to_free_disk_space_0",
+        "wal_replication_slot_accumulation_step_3_configure_safety_safeguards_0",
+        "wal_replication_slot_accumulation_limit_wal_retention_for_any_slot_to_10gb_0",
+        "wal_replication_slot_accumulation_escalation_criteria_0"
+      ],
+      "indexed_at": "2026-10-10T17:52:01.490184Z"
+    }
+  }
+}

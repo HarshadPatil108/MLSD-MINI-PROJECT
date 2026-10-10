@@ -1,7 +1,8 @@
-# Rule: LLM Gateway & Model Interaction
+# Rule: LLM Gateway, Vector Storage & Secret Isolation
 
-1. **Centralized Gateway:** All LLM invocations must route through the centralized LiteLLM gateway (`src.core.llm.LLMGateway`). Direct imports and calls to provider SDKs (`openai`, `google-generativeai`, `anthropic`) elsewhere in the codebase are strictly forbidden.
-2. **Schema-Constrained Outputs:** Every LLM response must be validated against a Pydantic schema with structured JSON output and an automated retry/repair fallback on parsing errors.
-3. **Default Model:** The default configured model is local Ollama `qwen2.5:7b` (overridable via `LLM_MODEL` in `.env` to Groq or Gemini free tiers).
-4. **Context Budget:** The total prompt and generation context window must stay strictly within **8,000 tokens** to prevent VRAM overflow and token exhaustion.
-5. **CPU Inference for Embeddings:** The text embedder (`all-MiniLM-L6-v2` / FastEmbed) and Cross-Encoder reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`) must execute on CPU to conserve GPU VRAM for the primary LLM.
+1. **Centralized LiteLLM Gateway:** All LLM invocations must route through `src.gateway.client`. Direct imports or calls to provider SDKs (`openai`, `google-generativeai`, `anthropic`) elsewhere in the codebase are strictly forbidden.
+2. **Cloud Free-Tier by Environment:** The model provider (e.g., Groq, Gemini) must be configured exclusively via environment variables (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`).
+3. **Zero Secrets in Repository (D4):** No credentials, private endpoints, or model identifiers may be hardcoded anywhere in the codebase. All configuration must be injected at runtime and documented in `.env.example`.
+4. **Chroma Vector Store with CPU Embeddings (L1):** Document indexing uses Chroma with CPU-based `sentence-transformers/all-MiniLM-L6-v2`. Document and section IDs must be preserved so re-embedding updates records in-place without rebuilding the entire index.
+5. **Schema-Constrained Decoding:** Every model call must enforce a Pydantic schema with structured JSON output and an automated repair fallback on validation failure.
+6. **Bounded Context & Reliability (A5):** Context windows must stay strictly within **8,000 tokens**. Every call must declare explicit timeouts, bounded exponential backoff retries, and a circuit breaker that trips to a safe fallback on provider outage.
