@@ -66,6 +66,35 @@ class ToolExecutionTrace(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+class VerificationResult(BaseModel):
+    """Result of citation resolution, claim support, and corpus boundary verification."""
+
+    is_verified: bool = Field(..., description="Whether the output passed all verification checks.")
+    citation_errors: list[str] = Field(
+        default_factory=list,
+        description="Errors for citations failing to resolve to retrieved text.",
+    )
+    support_errors: list[str] = Field(
+        default_factory=list, description="Errors where cited text does not support the claim."
+    )
+    ambiguity_detected: bool = Field(
+        default=False,
+        description="Whether symptom matches multiple cause classes with similar support.",
+    )
+    out_of_corpus: bool = Field(
+        default=False, description="Whether alert symptoms fall outside the indexed corpus."
+    )
+    escalation_required: bool = Field(
+        default=False, description="Whether human escalation is required."
+    )
+    escalation_route: RoutingTarget | None = Field(
+        default=None, description="Target human route for escalation."
+    )
+    escalation_reason: str | None = Field(
+        default=None, description="Explicit stated rationale for human escalation."
+    )
+
+
 class InvestigationOutput(BaseModel):
     """Structured advisory output produced by the multi-agent reasoning layer."""
 
@@ -92,6 +121,14 @@ class InvestigationOutput(BaseModel):
     route: RoutingTarget = Field(
         ...,
         description="Operational routing destination (self-serve runbook | page-secondary | incident-commander).",
+    )
+    verified: bool = Field(
+        default=False,
+        description="Whether every citation and claim passed mandatory verifier checks.",
+    )
+    escalation_reason: str | None = Field(
+        default=None,
+        description="Stated operational reason when escalation to a human is required.",
     )
     trace: list[str] = Field(
         default_factory=list,
@@ -121,5 +158,7 @@ class AgentState(TypedDict):
     max_tool_calls: int
     wall_clock_timeout_seconds: float
     final_output: InvestigationOutput | None
+    verification_result: VerificationResult | None
+    verification_retry_count: int
     error: str | None
     fallback_triggered: bool

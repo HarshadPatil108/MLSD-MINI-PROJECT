@@ -61,6 +61,8 @@ def test_investigator_tools_and_bounds(section_4_1_alert):
         "max_tool_calls": 3,  # Strict limit for testing
         "wall_clock_timeout_seconds": 30.0,
         "final_output": None,
+        "verification_result": None,
+        "verification_retry_count": 0,
         "error": None,
         "fallback_triggered": False,
     }
@@ -102,6 +104,8 @@ def test_investigator_wall_clock_timeout(section_4_1_alert):
         "max_tool_calls": 8,
         "wall_clock_timeout_seconds": 30.0,
         "final_output": None,
+        "verification_result": None,
+        "verification_retry_count": 0,
         "error": None,
         "fallback_triggered": False,
     }

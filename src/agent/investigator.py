@@ -125,6 +125,75 @@ class InvestigatorAgent:
             logger.info("Using deterministic synthesis engine (%s)", exc)
             return self._deterministic_synthesize(state, trace_logs)
 
+    def re_search_with_alternate_strategy(self, state: AgentState) -> InvestigationOutput:
+        """Execute alternate retrieval strategy upon verification failure (A3).
+
+        Alternate strategy:
+        1. Runbook-targeted search filtering by doc_type="runbook"
+        2. Strict keyword search derived directly from on_call_note and alert metrics
+        3. Re-synthesize grounded guidance and valid citations from newly retrieved passages.
+        """
+        trace_logs = list(state["final_output"].trace) if state.get("final_output") else []
+        trace_logs.append(
+            "Verification failure detected: executing alternate re-search strategy (runbook filter + keyword query)"
+        )
+
+        alert = state["alert"]
+        alert_name = str(alert.get("alert_name", ""))
+        note = str(alert.get("on_call_note", ""))
+
+        state["step_count"] += 1
+        # Alternate query 1: Focused runbook query
+        alternate_query_1 = f"{alert_name} diagnostic remediation runbook"
+        self.tool_executor.corpus_search(
+            state,
+            query=alternate_query_1,
+            filters={"doc_type": "runbook"},
+            top_k=4,
+        )
+
+        # Alternate query 2: Keyword search based on on_call_note terms
+        state["step_count"] += 1
+        note_keywords = " ".join([w for w in note.split() if len(w) > 3][:6])
+        alternate_query_2 = f"PostgreSQL {note_keywords}"
+        self.tool_executor.corpus_search(
+            state,
+            query=alternate_query_2,
+            top_k=4,
+        )
+
+        # Re-synthesize guidance
+        state["step_count"] += 1
+        trace_logs.append(
+            "Re-synthesizing guidance with passages retrieved from alternate strategy"
+        )
+
+        passages_text = "\n\n---\n\n".join(
+            f"Section: {p.get('section_id', 'unknown')}\nHeader: {p.get('header_path', '')}\nContent:\n{p.get('content', '')}"
+            for p in state["retrieved_passages"]
+        )
+
+        triage = state.get("triage_handoff")
+        synthesis_prompt = (
+            f"Alert: {state['alert']}\n\n"
+            f"Triage Hypothesis: {triage.model_dump() if triage else {}}\n\n"
+            f"Retrieved Context Passages (Alternate Search):\n{passages_text}\n"
+        )
+
+        try:
+            output = self.gateway.call_structured(
+                prompt=synthesis_prompt,
+                response_model=InvestigationOutput,
+                system_prompt=SYSTEM_PROMPT_INVESTIGATOR,
+                prompt_version=self.prompt_version,
+            )
+            output.trace = trace_logs
+            output.retrieved_passages = state["retrieved_passages"]
+            return output
+        except Exception as exc:  # noqa: BLE001 - Resilient fallback to deterministic engine on any gateway/provider error
+            logger.info("Using deterministic synthesis engine for re-search (%s)", exc)
+            return self._deterministic_synthesize(state, trace_logs)
+
     def _derive_modifying_query(self, text: str, state: AgentState) -> str:
         """Inspect read section for modifying provisions and extract follow-up search terms."""
         text_lower = text.lower()
@@ -158,35 +227,65 @@ class InvestigatorAgent:
 
         passages = state["retrieved_passages"]
 
+        # Testing hook: forced bad citation
+        if alert.get("force_bad_citation") and (
+            alert.get("persist_bad_citation") or state.get("verification_retry_count", 0) == 0
+        ):
+            return InvestigationOutput(
+                cause_class=triage.primary_cause_class if triage else "saturation",
+                first_response_steps=[
+                    "1. Diagnostic step citing fabricated non-existent section.",
+                ],
+                citations=[
+                    Citation(
+                        section_id="nonexistent_fake_section_id_99",
+                        quoted_span="Fabricated citation span not present in retrieved text.",
+                    )
+                ],
+                severity="SEV2",
+                severity_basis="Synthetic test response with bad citation.",
+                route="self-serve runbook",
+                trace=trace_logs,
+                retrieved_passages=passages,
+                prompt_version=self.prompt_version,
+            )
+
         # Default citations extracted directly from retrieved passages
         citations: list[Citation] = []
         for p in passages:
             content = p.get("content", "")
             sec_id = p.get("section_id", p.get("chunk_id", "section_root"))
 
-            # Extract a meaningful quote
-            if "pg_drop_replication_slot" in content:
+            # Extract a meaningful quote that strictly exists within the chunk content
+            if "SELECT pg_drop_replication_slot('slot_name_here');" in content:
                 citations.append(
                     Citation(
                         section_id=sec_id,
                         quoted_span="SELECT pg_drop_replication_slot('slot_name_here');",
                     )
                 )
-            elif "max_slot_wal_keep_size" in content:
+            elif "max_slot_wal_keep_size = 10GB" in content:
                 citations.append(
                     Citation(
                         section_id=sec_id,
                         quoted_span="max_slot_wal_keep_size = 10GB",
                     )
                 )
-            elif "pg_terminate_backend" in content:
+            elif "To prevent recurrence, set `max_slot_wal_keep_size`" in content:
+                citations.append(
+                    Citation(
+                        section_id=sec_id,
+                        quoted_span="To prevent recurrence, set `max_slot_wal_keep_size` in `postgresql.conf`:",
+                    )
+                )
+            elif "SELECT pg_terminate_backend(pid)" in content:
                 citations.append(
                     Citation(
                         section_id=sec_id,
                         quoted_span="SELECT pg_terminate_backend(pid)",
                     )
                 )
-            elif "CHECKPOINT" in content:
+            elif "CHECKPOINT;" in content:
                 citations.append(
                     Citation(
                         section_id=sec_id,
@@ -231,20 +330,12 @@ class InvestigatorAgent:
                     "remediation with verified citations is available."
                 )
 
-        # Case 2: Connection Pool Saturation
-        elif "connection" in alert_name.lower() or "active_connections" in metrics:
-            cause = "saturation"
-            steps = [
-                "1. Check connection breakdown by state: SELECT state, count(*) FROM pg_stat_activity GROUP BY state;",
-                "2. Identify long-running idle transactions: SELECT pid, now() - state_change FROM pg_stat_activity WHERE state = 'idle in transaction';",
-                "3. Terminate abandoned backends: SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < now() - INTERVAL '5 minutes';",
-            ]
-            severity = "SEV2"
-            route = "self-serve runbook"
-            basis = "Connection pool saturation approaching backend starvation limits."
-
-        # Case 3: Lock contention & deadlocks
-        elif "deadlock" in alert_name.lower() or "deadlocks_per_second" in metrics:
+        # Case 2: Lock contention & deadlocks
+        elif (
+            "deadlock" in alert_name.lower()
+            or "deadlocks_per_second" in metrics
+            or "deadlock" in note.lower()
+        ):
             cause = "contention"
             steps = [
                 "1. Query blocker tree in pg_locks joining pg_stat_activity.",
@@ -254,6 +345,18 @@ class InvestigatorAgent:
             severity = "SEV2"
             route = "self-serve runbook"
             basis = "Active deadlock rate impacting concurrent transactions."
+
+        # Case 3: Connection Pool Saturation
+        elif "connection" in alert_name.lower() or metrics.get("active_connections", 0) >= 300:
+            cause = "saturation"
+            steps = [
+                "1. Check connection breakdown by state: SELECT state, count(*) FROM pg_stat_activity GROUP BY state;",
+                "2. Identify long-running idle transactions: SELECT pid, now() - state_change FROM pg_stat_activity WHERE state = 'idle in transaction';",
+                "3. Terminate abandoned backends: SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < now() - INTERVAL '5 minutes';",
+            ]
+            severity = "SEV2"
+            route = "self-serve runbook"
+            basis = "Connection pool saturation approaching backend starvation limits."
 
         else:
             cause = triage.primary_cause_class if triage else "configuration"
