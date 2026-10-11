@@ -12,7 +12,7 @@
 | :---: | :--- | :--- | :--- | :---: | :---: |
 | **1** | **Ingestion Contract & Quarantine** | **F1, F2, D1, D4** | Pydantic data contract, range, categorical & cross-field validation, quarantine storage for rejected requests, `.env.example`. | 27 / 27 (100%) | **Completed** |
 | **2** | **Corpus Ingestion & Chroma Vector Store** | **D2, L1, F4** | PostgreSQL 18 PDF/markdown parser, 3 custom runbooks, escalation policy, hierarchical section chunker with breadcrumbs & section IDs, CPU `all-MiniLM-L6-v2` embeddings, idempotent Chroma upsert by ID, freshness metrics. | 37 / 37 (100%) | **Completed** |
-| **3** | **Multi-Agent Core & Tools** | **F3, A1, A2** | LangGraph 2-agent topology: Triage Agent (extracts entities, candidate cause classes) -> typed hand-off -> Investigator Agent. Tools: `corpus_search`, `get_section`, `get_alert_field`. Bounded loops (steps, tool calls, wall-clock time). | TBD | Pending |
+| **3** | **Multi-Agent Core & Tools** | **F3, A1, A2** | LangGraph 2-agent topology: Triage Agent (extracts entities, candidate cause classes) -> typed hand-off -> Investigator Agent. Tools: `corpus_search`, `get_section`, `get_alert_field`. Bounded loops (steps, tool calls, wall-clock time). | 43 / 43 (100%) | **Completed** |
 | **4** | **Citation Verifier & Escalation Engine** | **F5, F6, F7, A3** | Mandatory Verifier: checks every citation resolves to retrieved text. Categorical cause classification, severity assignment, and routing (`self-serve runbook`, `page-secondary`, `incident-commander`). Deterministic escalation on ambiguous support (F7, Section 4.1 scenario). | TBD | Pending |
 | **5** | **Async API & Redis Worker Queue** | **A4, D3** | FastAPI asynchronous endpoints: `POST /runs` (returns `run_id`), `GET /runs/{id}`, `GET /quarantine`. Redis-backed task queue with background worker. Docker Compose 4-service topology (`api`, `worker`, `redis`, `chroma`) with dependencies and health checks. | TBD | Pending |
 | **6** | **Streamlit Web Client UI** | **A8** | Web client submitting alerts and notes, polling run status, displaying routed recommendations with verified citations, or escalation path. | TBD | Pending |
@@ -64,5 +64,12 @@
   - Implemented [`BM25Index`](file:///E:/MLSD_MINI/src/rag/bm25.py) and [`HybridRetriever`](file:///E:/MLSD_MINI/src/rag/retriever.py) merging dense and sparse hits via Reciprocal Rank Fusion ($k=60$).
   - Built ingestion CLI [`app/ingest.py`](file:///E:/MLSD_MINI/app/ingest.py) (`python -m app.ingest [--reindex-changed]`) with SHA-256 hash tracking and selective re-indexing (0.06s idempotent rerun).
   - Exposed index build time, chunk count, and throughput on `/health` and Prometheus `/metrics`.
-  - Published [`docs/RETRIEVAL.md`](file:///E:/MLSD_MINI/docs/RETRIEVAL.md) addressing the symptom-vs-cause inversion.
-  - Verified 37 unit and integration tests in [`tests/`](file:///E:/MLSD_MINI/tests/) with 100% pass rate and ruff compliance.
+- **2026-10-10:** Completed **Slice 3: Multi-Agent Core & Tools** (F3, A1, A2):
+  - Designed typed state models [`AgentState`](file:///E:/MLSD_MINI/src/agent/state.py), [`TriageHandOff`](file:///E:/MLSD_MINI/src/agent/state.py), and [`InvestigationOutput`](file:///E:/MLSD_MINI/src/agent/state.py).
+  - Built LLM Gateway [`LiteLLMGateway`](file:///E:/MLSD_MINI/src/gateway/client.py) with structured Pydantic outputs, prompt versioning tracking (`triage-v1.0.0`, `investigator-v1.0.0`), and SQLite response caching.
+  - Implemented Triage Agent [`TriageAgent`](file:///E:/MLSD_MINI/src/agent/triage.py) classifying cause classes and entities.
+  - Implemented Investigator Agent [`InvestigatorAgent`](file:///E:/MLSD_MINI/src/agent/investigator.py) and tools [`AgentToolExecutor`](file:///E:/MLSD_MINI/src/agent/tools.py) (`corpus_search`, `get_section`, `get_alert_field`) with bounded step/tool call counts and wall-clock timeout safety.
+  - Implemented multi-hop reasoning loop: search -> read -> modifying provision check -> derived search -> grounded citation synthesis.
+  - Built LangGraph pipeline [`create_incident_graph`](file:///E:/MLSD_MINI/src/agent/graph.py) with resilient fallback routing to page secondary with SEV2 on timeout or error.
+  - Published [`docs/TOPOLOGY.md`](file:///E:/MLSD_MINI/docs/TOPOLOGY.md) documenting agent graph topology, transitions, and fallback paths.
+  - Added 6 dedicated unit and acceptance tests in [`tests/test_agents.py`](file:///E:/MLSD_MINI/tests/test_agents.py) verifying Section 4.1 scenario reaches replication-slot cause with grounded citations (43/43 tests passing across suite).
